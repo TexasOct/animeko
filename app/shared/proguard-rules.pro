@@ -11,6 +11,14 @@
 -keep class ** extends me.him188.ani.datasources.api.source.MediaSource {}
 -keep class ** extends me.him188.ani.datasources.api.source.MediaSourceFactory {}
 
+# PlayerStatsOverlay.android.kt 反射读取 ExoPlayer 内部字段 (网速估计, 实际解码器名)
+-keepclassmembers class androidx.media3.exoplayer.ExoPlayerImpl {
+    androidx.media3.exoplayer.upstream.BandwidthMeter bandwidthMeter;
+}
+-keepclassmembers class androidx.media3.exoplayer.mediacodec.MediaCodecRenderer {
+    androidx.media3.exoplayer.mediacodec.MediaCodecInfo codecInfo;
+}
+
 # Torrent4j
 -keep class org.libtorrent4j.swig.libtorrent_jni {*;}
 -keep class me.him188.ani.app.ui.settings.tabs.** {*;} # 否则设置页切换 tab 会 crash, #367
@@ -37,6 +45,9 @@
 
 # ffmpeg native
 -keep class org.openani.mediamp.ffmpeg.JvmFFmpegProcess { *; }
+
+# onnxruntime
+-keep class ai.onnxruntime.** { *; } # onnxruntime4j_jni constructs Java values through FindClass/GetMethodID
 
 # Android AIDL for torrent service.
 -keepnames class me.him188.ani.app.domain.torrent.I* { *; }

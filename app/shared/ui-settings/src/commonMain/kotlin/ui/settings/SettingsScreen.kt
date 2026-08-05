@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024-2025 OpenAni and contributors.
+ * Copyright (C) 2024-2026 OpenAni and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license, which can be found at the following link.
@@ -12,6 +12,7 @@ package me.him188.ani.app.ui.settings
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
@@ -58,8 +59,10 @@ import androidx.compose.material3.adaptive.navigation.BackNavigationBehavior
 import androidx.compose.material3.adaptive.navigation.ThreePaneScaffoldNavigator
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,10 +71,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -79,6 +85,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -91,6 +98,7 @@ import me.him188.ani.app.ui.adaptive.ListDetailLayoutParameters
 import me.him188.ani.app.ui.adaptive.PaneScope
 import me.him188.ani.app.ui.adaptive.TopAppBarSize
 import me.him188.ani.app.ui.foundation.LocalPlatform
+import me.him188.ani.app.ui.foundation.animation.AniAnimatedVisibility
 import me.him188.ani.app.ui.foundation.animation.LocalAniMotionScheme
 import me.him188.ani.app.ui.foundation.animation.NavigationMotionScheme
 import me.him188.ani.app.ui.foundation.ifThen
@@ -100,6 +108,9 @@ import me.him188.ani.app.ui.foundation.layout.isHeightAtLeastExpanded
 import me.him188.ani.app.ui.foundation.layout.isHeightAtLeastMedium
 import me.him188.ani.app.ui.foundation.layout.paneVerticalPadding
 import me.him188.ani.app.ui.foundation.theme.AniThemeDefaults
+import me.him188.ani.app.ui.foundation.theme.LocalAppChromeHazeState
+import me.him188.ani.app.ui.foundation.theme.appChromeHazeSource
+import me.him188.ani.app.ui.foundation.theme.isAppChromeFrostedGlassActive
 import me.him188.ani.app.ui.foundation.widgets.BackNavigationIconButton
 import me.him188.ani.app.ui.foundation.widgets.LocalToaster
 import me.him188.ani.app.ui.lang.Lang
@@ -139,6 +150,7 @@ import me.him188.ani.app.ui.settings.tabs.about.DevelopersTab
 import me.him188.ani.app.ui.settings.tabs.app.AppearanceGroup
 import me.him188.ani.app.ui.settings.tabs.app.PlayerGroup
 import me.him188.ani.app.ui.settings.tabs.app.SoftwareUpdateGroup
+import me.him188.ani.app.ui.settings.tabs.app.WatchTogetherGroup
 import me.him188.ani.app.ui.settings.tabs.log.LogTab
 import me.him188.ani.app.ui.settings.tabs.media.BackupSettings
 import me.him188.ani.app.ui.settings.tabs.media.CacheDirectoryGroup
@@ -146,7 +158,9 @@ import me.him188.ani.app.ui.settings.tabs.media.MediaSelectionGroup
 import me.him188.ani.app.ui.settings.tabs.media.TorrentEngineGroup
 import me.him188.ani.app.ui.settings.tabs.media.PikPakAcceleratorGroup
 import me.him188.ani.app.ui.settings.tabs.media.source.MediaSourceGroup
+import me.him188.ani.app.ui.settings.tabs.media.source.MediaSourceSelectionActions
 import me.him188.ani.app.ui.settings.tabs.media.source.MediaSourceSubscriptionGroup
+import me.him188.ani.app.ui.settings.tabs.media.source.rememberMediaSourceSelectionState
 import me.him188.ani.app.ui.settings.tabs.network.ConfigureProxyGroup
 import me.him188.ani.app.ui.settings.tabs.network.ServerSelectionGroup
 import me.him188.ani.app.ui.settings.tabs.theme.ThemeGroup
@@ -181,10 +195,16 @@ fun SettingsScreen(
     var lastSelectedTab by rememberSaveable(initialTab) {
         mutableStateOf(initialTab)
     }
+    val mediaSourceSelectionState = rememberMediaSourceSelectionState()
 
     LaunchedEffect(Unit) {
         if (lastSelectedTab == null && !layoutParameters.preferSinglePane) {
             lastSelectedTab = SettingsTab.APPEARANCE
+        }
+    }
+    LaunchedEffect(lastSelectedTab) {
+        if (lastSelectedTab != SettingsTab.MEDIA_SOURCE) {
+            mediaSourceSelectionState.clear()
         }
     }
     val coroutineScope = rememberCoroutineScope()
@@ -211,8 +231,12 @@ fun SettingsScreen(
             }
         },
         onClickBackOnDetailPage = {
-            coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                navigator.navigateBack(BackNavigationBehavior.PopUntilScaffoldValueChange)
+            if (mediaSourceSelectionState.inSelection) {
+                mediaSourceSelectionState.clear()
+            } else {
+                coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    navigator.navigateBack(BackNavigationBehavior.PopUntilScaffoldValueChange)
+                }
             }
         },
         navItems = {
@@ -315,12 +339,15 @@ fun SettingsScreen(
                             SettingsTab.APPEARANCE -> AppearanceGroup(vm.uiSettings)
                             SettingsTab.THEME -> ThemeGroup(vm.themeSettings)
                             SettingsTab.UPDATE -> SoftwareUpdateGroup(vm.softwareUpdateGroupState)
-                            SettingsTab.PLAYER -> PlayerGroup(
-                                vm.videoScaffoldConfig,
-                                vm.danmakuFilterConfigState,
-                                vm.danmakuRegexFilterState,
-                                vm.isInDebugMode,
-                            )
+                            SettingsTab.PLAYER -> {
+                                PlayerGroup(
+                                    vm.videoScaffoldConfig,
+                                    vm.danmakuFilterConfigState,
+                                    vm.danmakuRegexFilterState,
+                                    vm.isInDebugMode,
+                                )
+                                WatchTogetherGroup(vm.watchTogetherSettings)
+                            }
 
                             SettingsTab.MEDIA_SOURCE -> {
                                 MediaSourceSubscriptionGroup(
@@ -329,6 +356,7 @@ fun SettingsScreen(
                                 MediaSourceGroup(
                                     vm.mediaSourceGroupState,
                                     vm.editMediaSourceState,
+                                    mediaSourceSelectionState,
                                 )
                             }
 
@@ -357,6 +385,11 @@ fun SettingsScreen(
                         }
                     }
                 }
+                if (currentTab == SettingsTab.MEDIA_SOURCE) {
+                    AniAnimatedVisibility(mediaSourceSelectionState.inSelection) {
+                        Spacer(Modifier.height(80.dp))
+                    }
+                }
                 Spacer(
                     Modifier.height(
                         currentWindowAdaptiveInfo1().windowSizeClass.paneVerticalPadding,
@@ -364,8 +397,23 @@ fun SettingsScreen(
                 )
             }
         },
-        modifier,
-        windowInsets,
+        detailPaneBottomBar = { currentTab, bottomBarInsets ->
+            if (currentTab == SettingsTab.MEDIA_SOURCE) {
+                AniAnimatedVisibility(
+                    visible = mediaSourceSelectionState.inSelection,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                ) {
+                    MediaSourceSelectionActions(
+                        mediaSources = vm.mediaSourceGroupState.mediaSources,
+                        selectionState = mediaSourceSelectionState,
+                        editState = vm.editMediaSourceState,
+                        windowInsets = bottomBarInsets,
+                    )
+                }
+            }
+        },
+        modifier = modifier,
+        contentWindowInsets = windowInsets,
         navigationIcon = navigationIcon,
         layoutParameters = layoutParameters,
     )
@@ -380,12 +428,14 @@ internal fun SettingsPageLayout(
     onClickBackOnDetailPage: () -> Unit,
     navItems: @Composable (SettingsDrawerScope.() -> Unit),
     tabContent: @Composable SettingsDetailPaneScope.(currentTab: SettingsTab?) -> Unit, // inside Column verticalScroll
+    detailPaneBottomBar: @Composable BoxScope.(currentTab: SettingsTab?, windowInsets: WindowInsets) -> Unit =
+        { _, _ -> },
     modifier: Modifier = Modifier,
     contentWindowInsets: WindowInsets = AniWindowInsets.forColumnPageContent(),
     containerColor: Color = AniThemeDefaults.pageContentBackgroundColor,
     layoutParameters: ListDetailLayoutParameters = ListDetailLayoutParameters.calculate(navigator.scaffoldDirective),
     navigationIcon: @Composable () -> Unit = {},
-) = Surface(color = containerColor) {
+) = SettingsPageSurface(containerColor) {
     val layoutParametersState by rememberUpdatedState(layoutParameters)
 
     @Stable
@@ -398,6 +448,9 @@ internal fun SettingsPageLayout(
             this ?: SettingsTab.Default
         }
     }
+
+    // 毛玻璃模式下顶栏覆盖在内容上方并保持常驻, 以便展示模糊效果.
+    val frostedGlassActive = isAppChromeFrostedGlassActive()
 
     val listPaneTopAppBarScrollBehavior = if (LocalPlatform.current.hasScrollingBug()) {
         TopAppBarDefaults.pinnedScrollBehavior()
@@ -422,71 +475,99 @@ internal fun SettingsPageLayout(
             else -> TopAppBarSize.SMALL
         }
     }
-    AniListDetailPaneScaffold(
-        navigator,
-        listPaneTopAppBar = {
-            AniTopAppBar(
-                title = { AniTopAppBarDefaults.Title(stringResource(Lang.settings)) },
-                navigationIcon = {
-                    if (navigator.canNavigateBack()) {
-                        BackNavigationIconButton(
-                            onNavigateBack = {
-                                onClickBackOnListPage()
-                            },
-                        )
-                    } else {
-                        navigationIcon()
-                    }
-                },
-                colors = if (isSinglePane) {
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = containerColor,
-                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+    val listPaneTopAppBar: @Composable PaneScope.() -> Unit = {
+        AniTopAppBar(
+            title = { AniTopAppBarDefaults.Title(stringResource(Lang.settings)) },
+            navigationIcon = {
+                if (navigator.canNavigateBack()) {
+                    BackNavigationIconButton(
+                        onNavigateBack = {
+                            onClickBackOnListPage()
+                        },
                     )
                 } else {
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = containerColor,
-                        scrolledContainerColor = containerColor,
-                    )
-                },
-                scrollBehavior = listPaneTopAppBarScrollBehavior,
-                windowInsets = paneContentWindowInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
-                size = topAppBarSize,
-            )
-        },
+                    navigationIcon()
+                }
+            },
+            colors = if (isSinglePane) {
+                TopAppBarDefaults.topAppBarColors(
+                    containerColor = containerColor,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                )
+            } else {
+                TopAppBarDefaults.topAppBarColors(
+                    containerColor = containerColor,
+                    scrolledContainerColor = containerColor,
+                )
+            },
+            scrollBehavior = listPaneTopAppBarScrollBehavior,
+            windowInsets = paneContentWindowInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+            size = topAppBarSize,
+        )
+    }
+    AniListDetailPaneScaffold(
+        navigator,
+        // 毛玻璃模式下顶栏由 listPaneContent 内部覆盖绘制.
+        listPaneTopAppBar = if (frostedGlassActive) null else listPaneTopAppBar,
         listPaneContent = paneScope@{
-            PermanentDrawerSheet(
-                Modifier
-                    .paneContentPadding(extraStart = (-8).dp, extraEnd = (-8).dp)
-                    .paneWindowInsetsPadding()
-                    .fillMaxWidth()
-                    .nestedScroll(listPaneTopAppBarScrollBehavior.nestedScrollConnection)
-                    .verticalScroll(listPaneScrollState),
-                drawerContainerColor = Color.Unspecified,
-            ) {
-                val highlightSelectedItemState = rememberUpdatedState(layoutParametersState.highlightSelectedItem)
-                val scope = remember(this, navigator, currentTab, highlightSelectedItemState) {
-                    object : SettingsDrawerScope(), ColumnScope by this {
-                        @Composable
-                        override fun Item(item: SettingsTab) {
-                            NavigationDrawerItem(
-                                icon = { Icon(getIcon(item), contentDescription = null) },
-                                label = { Text(getName(item)) },
-                                selected = item == currentTab() && highlightSelectedItemState.value,
-                                onClick = {
-                                    onSelectedTab(item)
-                                },
-                            )
+            var listTopAppBarHeight by remember { mutableStateOf(0) }
+            val drawerSheet: @Composable PaneScope.() -> Unit = {
+                PermanentDrawerSheet(
+                    Modifier
+                        .paneContentPadding(extraStart = (-8).dp, extraEnd = (-8).dp)
+                        .paneWindowInsetsPadding()
+                        .fillMaxWidth()
+                        .nestedScroll(listPaneTopAppBarScrollBehavior.nestedScrollConnection)
+                        .verticalScroll(listPaneScrollState),
+                    drawerContainerColor = Color.Unspecified,
+                ) {
+                    val highlightSelectedItemState = rememberUpdatedState(layoutParametersState.highlightSelectedItem)
+                    val scope = remember(this, navigator, currentTab, highlightSelectedItemState) {
+                        object : SettingsDrawerScope(), ColumnScope by this {
+                            @Composable
+                            override fun Item(item: SettingsTab) {
+                                NavigationDrawerItem(
+                                    icon = { Icon(getIcon(item), contentDescription = null) },
+                                    label = { Text(getName(item)) },
+                                    selected = item == currentTab() && highlightSelectedItemState.value,
+                                    onClick = {
+                                        onSelectedTab(item)
+                                    },
+                                )
+                            }
                         }
                     }
+
+
+                    val verticalPadding = currentWindowAdaptiveInfo1().windowSizeClass.paneVerticalPadding
+
+                    // 毛玻璃顶栏覆盖在内容上方时, 在滚动内容顶部留出顶栏的空间.
+                    if (frostedGlassActive) {
+                        Spacer(Modifier.height(with(LocalDensity.current) { listTopAppBarHeight.toDp() })) // scrollable
+                    }
+                    Spacer(Modifier.height(verticalPadding - 8.dp)) // scrollable
+                    navItems(scope)
+                    Spacer(Modifier.height(verticalPadding)) // scrollable
                 }
+            }
 
-
-                val verticalPadding = currentWindowAdaptiveInfo1().windowSizeClass.paneVerticalPadding
-
-                Spacer(Modifier.height(verticalPadding - 8.dp)) // scrollable
-                navItems(scope)
-                Spacer(Modifier.height(verticalPadding)) // scrollable
+            if (frostedGlassActive) {
+                Box {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            // 顶栏覆盖在内容上, 这里代替 scaffold 消耗顶栏的 insets.
+                            .consumeWindowInsets(paneContentWindowInsets.only(WindowInsetsSides.Top))
+                            .appChromeHazeSource(backgroundColor = containerColor),
+                    ) {
+                        drawerSheet()
+                    }
+                    Box(Modifier.onSizeChanged { listTopAppBarHeight = it.height }) {
+                        listPaneTopAppBar()
+                    }
+                }
+            } else {
+                drawerSheet()
             }
         },
         // empty because our detailPaneContent already has it
@@ -531,6 +612,12 @@ internal fun SettingsPageLayout(
                             .wrapContentWidth()
                             .widthIn(max = 1000.dp),
                     ) {
+                        // 毛玻璃顶栏覆盖在内容上方时, 在滚动内容顶部留出顶栏的空间
+                        val topAppBarUnderlapHeight = LocalSettingsTopAppBarUnderlapHeight.current
+                        if (topAppBarUnderlapHeight > 0) {
+                            Spacer(Modifier.height(with(LocalDensity.current) { topAppBarUnderlapHeight.toDp() }))
+                        }
+
                         scope.content()
 
                         // 滚动容器底部留出安全区域
@@ -576,6 +663,14 @@ internal fun SettingsPageLayout(
                                 RouteContent {
                                     tabContent(tab)
                                 }
+                            },
+                            floatingContent = {
+                                detailPaneBottomBar(
+                                    tab,
+                                    paneContentWindowInsets.only(
+                                        WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
+                                    ),
+                                )
                             },
                         )
                     }
@@ -651,6 +746,23 @@ internal fun SettingsPageLayout(
     )
 }
 
+/**
+ * 设置页自带一个独立的毛玻璃作用域: 启用毛玻璃时, 顶栏模糊其下方滚动的内容.
+ */
+@Composable
+private fun SettingsPageSurface(containerColor: Color, content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalAppChromeHazeState provides rememberHazeState()) {
+        Surface(color = containerColor, content = content)
+    }
+}
+
+/**
+ * 毛玻璃顶栏覆盖在 pane 内容上方时, 滚动内容需要在顶部留出的空间 (px).
+ *
+ * 不启用毛玻璃时为 0.
+ */
+private val LocalSettingsTopAppBarUnderlapHeight = compositionLocalOf { 0 }
+
 @Stable
 interface SettingsDetailPaneScope : PaneScope {
     val detailPaneNavController: NavHostController
@@ -661,8 +773,42 @@ private fun PaneScope.DetailPaneRoute(
     topAppBar: @Composable () -> Unit,
     detailPaneTopAppBarScrollBehavior: TopAppBarScrollBehavior,
     modifier: Modifier = Modifier,
+    floatingContent: @Composable BoxScope.() -> Unit = {},
     tabContent: @Composable (PaneScope.() -> Unit),
 ) {
+    if (isAppChromeFrostedGlassActive()) {
+        // 毛玻璃: 顶栏覆盖在内容上方, 内容从顶栏下方滚过并被模糊.
+        // 内容通过 LocalSettingsTopAppBarUnderlapHeight 在滚动内容顶部留出顶栏的空间.
+        var topAppBarHeight by remember { mutableStateOf(0) }
+        Box(modifier) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .consumeWindowInsets(paneContentWindowInsets.only(WindowInsetsSides.Top))
+                    .appChromeHazeSource(backgroundColor = AniThemeDefaults.pageContentBackgroundColor),
+            ) {
+                Column(
+                    Modifier
+                        .paneContentPadding(
+                            extraStart = -SettingsScope.itemHorizontalPadding,
+                            extraEnd = -SettingsScope.itemHorizontalPadding,
+                        )
+                        .paneWindowInsetsPadding()
+                        .nestedScroll(detailPaneTopAppBarScrollBehavior.nestedScrollConnection),
+                ) {
+                    CompositionLocalProvider(LocalSettingsTopAppBarUnderlapHeight provides topAppBarHeight) {
+                        tabContent()
+                    }
+                }
+            }
+            Box(Modifier.onSizeChanged { topAppBarHeight = it.height }) {
+                topAppBar()
+            }
+            floatingContent()
+        }
+        return
+    }
+
     Column(modifier) {
         topAppBar()
 
@@ -682,6 +828,7 @@ private fun PaneScope.DetailPaneRoute(
             ) {
                 tabContent()
             }
+            floatingContent()
         }
     }
 }

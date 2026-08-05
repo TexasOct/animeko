@@ -24,7 +24,6 @@
 @file:DependsOn("org.jetbrains:annotations:23.0.0")
 @file:DependsOn("actions:github-script:v7")
 @file:DependsOn("gradle:actions__setup-gradle:v3")
-@file:DependsOn("timheuer:base64-to-file:v1.1")
 @file:DependsOn("actions:upload-artifact:v4")
 @file:DependsOn("actions:download-artifact:v4")
 @file:DependsOn("reactivecircus:android-emulator-runner:v2.35.0")
@@ -72,7 +71,6 @@ import io.github.typesafegithub.workflows.actions.jlumbroso.FreeDiskSpace_Untype
 import io.github.typesafegithub.workflows.actions.reactivecircus.AndroidEmulatorRunner
 import io.github.typesafegithub.workflows.actions.snowactions.Qrcode_Untyped
 import io.github.typesafegithub.workflows.actions.softprops.ActionGhRelease
-import io.github.typesafegithub.workflows.actions.timheuer.Base64ToFile_Untyped
 import io.github.typesafegithub.workflows.domain.AbstractResult
 import io.github.typesafegithub.workflows.domain.ActionStep
 import io.github.typesafegithub.workflows.domain.CommandStep
@@ -84,6 +82,7 @@ import io.github.typesafegithub.workflows.domain.Permission
 import io.github.typesafegithub.workflows.domain.RunnerType
 import io.github.typesafegithub.workflows.domain.Shell
 import io.github.typesafegithub.workflows.domain.actions.Action
+import io.github.typesafegithub.workflows.domain.actions.CustomAction
 import io.github.typesafegithub.workflows.domain.triggers.PullRequest
 import io.github.typesafegithub.workflows.domain.triggers.Push
 import io.github.typesafegithub.workflows.dsl.JobBuilder
@@ -233,7 +232,9 @@ data class MatrixInstance(
         add(quote("-Porg.gradle.daemon.idletimeout=60000"))
         add(quote("-Dfile.encoding=UTF-8"))
 
-        if (os == OS.WINDOWS) {
+        // These native build settings are for the x64-only anitorrent runtime;
+        // WOA64 disables anitorrent.
+        if (os == OS.WINDOWS && arch == Arch.X64) {
             add(quote("-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"))
             add(quote("-DBoost_INCLUDE_DIR=C:/vcpkg/installed/x64-windows/include"))
         }
@@ -321,6 +322,14 @@ sealed class Runner(
         os = OS.WINDOWS,
         arch = Arch.X64,
         labels = setOf("windows-2022"),
+    )
+
+    object GithubWindows11Arm64 : GithubHosted(
+        id = "github-windows-11-arm64",
+        displayName = "Windows 11 AArch64 (GitHub)",
+        os = OS.WINDOWS,
+        arch = Arch.AARCH64,
+        labels = setOf("windows-11-arm"),
     )
 
     object GithubMacOS14 : GithubHosted(
@@ -420,6 +429,19 @@ run {
         gradleHeap = "4g",
         gradleParallel = true,
     )
+    val ghWinArm64 = MatrixInstance(
+        runner = Runner.GithubWindows11Arm64,
+        uploadApk = false,
+        composeResourceTriple = "windows-arm64",
+        uploadDesktopInstallers = true,
+        extraGradleArgs = listOf(
+            "-P$ANI_ANDROID_ABIS=arm64-v8a",
+            "--no-configuration-cache", // WOA64: Gradle fails storing KotlinCompile state on windows-11-arm.
+        ),
+        buildAllAndroidAbis = false,
+        gradleHeap = "4g",
+        gradleParallel = true,
+    )
     val ghUbuntu2404 = MatrixInstance(
         runner = Runner.GithubUbuntu2404,
         uploadApk = true,
@@ -488,6 +510,7 @@ run {
     buildMatrixInstances = listOf(
 //        selfWin10,
         ghWin,
+        ghWinArm64,
         ghUbuntu2404,
         ghMac15Intel,
         selfMac15.copy(
@@ -499,6 +522,7 @@ run {
 
     releaseMatrixInstances = listOf(
         ghWin, // win installer
+        ghWinArm64, // win ARM64 portable
         selfMac15.copy(
             buildAllAndroidAbis = true,
             uploadApk = false,
@@ -523,6 +547,7 @@ fun getBuildJobBody(matrix: MatrixInstance): JobBuilder<BuildJobOutputs>.() -> U
         enableSwap()
         deleteLocalProperties()
         writeLocalProperties()
+        setupAndroidSdkForWindowsArm64()
         installJbr21()
         chmod777()
         setupGradle()
@@ -556,7 +581,11 @@ fun getBuildJobBody(matrix: MatrixInstance): JobBuilder<BuildJobOutputs>.() -> U
 }
 
 object ArtifactNames {
-    fun windowsPortable() = "ani-windows-portable"
+    fun windowsPortable(arch: Arch) = when (arch) {
+        Arch.X64 -> "ani-windows-portable"
+        Arch.AARCH64 -> "ani-windows-aarch64-portable"
+    }
+
     fun macosDmg(arch: Arch) = "ani-macos-dmg-${arch}"
     fun macosPortable(arch: Arch) = "ani-macos-portable-${arch}"
     fun iosIpa() = "ani-ios-ipa"
@@ -573,8 +602,9 @@ fun getVerifyJobBody(
         // We must not destroy the self-hosted runner, 
         // but we are free to remove anything from the GitHub-hosted runners
 
-        when (runner.os) {
-            OS.MACOS -> {
+        when (runner.os to runner.arch) {
+            OS.MACOS to Arch.X64,
+            OS.MACOS to Arch.AARCH64 -> {
                 run(
                     name = "Delete libraries from system",
                     command = shell(
@@ -589,7 +619,7 @@ fun getVerifyJobBody(
                 )
             }
 
-            OS.WINDOWS -> {
+            OS.WINDOWS to Arch.X64 -> {
                 run(
                     name = "Delete libraries from system",
                     shell = Shell.PowerShell,
@@ -603,7 +633,7 @@ fun getVerifyJobBody(
                 )
             }
 
-            OS.UBUNTU -> {}
+            else -> {}
         }
     }
 
@@ -626,17 +656,35 @@ fun getVerifyJobBody(
         VerifyTask(
             name = "anitorrent-load-test",
             step = "Check that Anitorrent can be loaded",
-            disabledOn = listOf(Runner.GithubUbuntu2404),
+            disabledOn = listOf(Runner.GithubUbuntu2404, Runner.GithubWindows11Arm64),
+        ),
+        // Windows ARM64 FFmpeg uses a new packaging path; verify it explicitly because
+        // startup only logs native load failures.
+        VerifyTask(
+            name = "mediamp-ffmpeg-smoke-test",
+            step = "Check that MediaMP FFmpeg can run",
+            enabledOnlyOn = listOf(Runner.GithubWindows11Arm64),
         ),
         VerifyTask(
             name = "dandanplay-app-id",
             step = "Check that Dandanplay APP ID is valid",
             `if` = expr { github.isAnimekoRepository and !github.isPullRequest },
+            disabledOn = listOf(Runner.GithubWindows11Arm64),
         ),
         VerifyTask(
             name = "sentry-dsn",
             step = "Check that sentryDsn is valid",
             `if` = expr { github.isAnimekoRepository and !github.isPullRequest },
+            disabledOn = listOf(Runner.GithubWindows11Arm64),
+        ),
+        // Windows ARM64 relies on the SQLite natives built by :ci-helper:sqlite-woa64 (AndroidX does
+        // not ship Windows ARM64 natives). On Linux this additionally asserts that the process holds exactly one
+        // libsqliteJni image — the invariant behind #3188 and #3213, both of which crashed the
+        // shipped AppImage after the driver had loaded successfully.
+        VerifyTask(
+            name = "sqlite-bundled-load-test",
+            step = "Check that bundled SQLite can be loaded",
+            enabledOnlyOn = listOf(Runner.GithubWindows11Arm64, Runner.GithubUbuntu2404),
         ),
     ).filter { task ->
         // Filter task that should execute on this runner.
@@ -654,11 +702,12 @@ fun getVerifyJobBody(
     }
 
     when (runner.os to runner.arch) {
-        OS.WINDOWS to Arch.X64 -> {
+        OS.WINDOWS to Arch.X64,
+        OS.WINDOWS to Arch.AARCH64 -> {
             usesWithAttempts(
-                name = "Download Windows x64 Portable",
+                name = "Download Windows ${if (runner.arch == Arch.X64) "x64" else "AArch64"} Portable",
                 action = DownloadArtifact(
-                    name = ArtifactNames.windowsPortable(),
+                    name = ArtifactNames.windowsPortable(runner.arch),
                     path = "${expr { github.workspace }}/ci-helper/verify",
                 ),
             )
@@ -821,12 +870,17 @@ workflow(
 
     builds.filter { (matrix, _) ->
         matrix.runner.os == OS.WINDOWS && matrix.uploadDesktopInstallers
-    }.forEach { (_, build) ->
-        listOf(
-            Runner.GithubWindowsServer2025,
-            Runner.GithubWindowsServer2022,
-//            Runner.SelfHostedWindows10,
-        ).forEach { runner ->
+    }.forEach { (matrix, build) ->
+        val verifyRunners = when (matrix.arch) {
+            Arch.X64 -> listOf(
+                Runner.GithubWindowsServer2025,
+                Runner.GithubWindowsServer2022,
+//                Runner.SelfHostedWindows10,
+            )
+
+            Arch.AARCH64 -> listOf(Runner.GithubWindows11Arm64)
+        }
+        verifyRunners.forEach { runner ->
             addVerifyJob(build, runner, build.result.eq(AbstractResult.Status.Success))
         }
     }
@@ -969,6 +1023,7 @@ workflow(
             deleteLocalProperties()
             writeLocalProperties()
             updateJvmArgsInGradleProperties()
+            setupAndroidSdkForWindowsArm64()
             installJbr21()
             chmod777()
             setupGradle()
@@ -1213,6 +1268,25 @@ class WithMatrix(
         }
     }
 
+    fun JobBuilder<*>.setupAndroidSdkForWindowsArm64() {
+        if (matrix.isWindowsAArch64) {
+            // Unlike the x64 Windows images, windows-11-arm does not provide the Android SDK
+            // used by the shared build.
+            uses(
+                name = "Setup Android SDK",
+                action = CustomAction(
+                    actionOwner = "android-actions",
+                    actionName = "setup-android",
+                    actionVersion = "v3",
+                    inputs = mapOf(
+                        "accept-android-sdk-licenses" to "true",
+                        "packages" to "platform-tools platforms;android-36 build-tools;36.0.0",
+                    ),
+                ),
+            )
+        }
+    }
+
     fun JobBuilder<*>.installJbr21() {
         // For mac
         fun downloadJbrUnix(
@@ -1302,9 +1376,9 @@ class WithMatrix(
         when (matrix.runner.os) {
             OS.MACOS -> {
                 val jbrLocationExpr = if (matrix.arch == Arch.AARCH64) {
-                    downloadJbrUnix("jbrsdk_jcef-21.0.8-osx-aarch64-b1038.68.tar.gz")
+                    downloadJbrUnix("jbrsdk_jcef-21.0.11-osx-aarch64-b1163.116.tar.gz")
                 } else {
-                    downloadJbrUnix("jbrsdk_jcef-21.0.6-osx-x64-b895.91.tar.gz")
+                    downloadJbrUnix("jbrsdk_jcef-21.0.11-osx-x64-b1163.116.tar.gz")
                 }
 
                 uses(
@@ -1319,7 +1393,12 @@ class WithMatrix(
             }
 
             OS.WINDOWS -> {
-                val jbrLocationExpr = downloadJbrUsingPython("jbrsdk_jcef-21.0.5-windows-x64-b750.29.tar.gz")
+                val jbrLocationExpr = if (matrix.arch == Arch.AARCH64) {
+                    // WoA-only: Windows ARM64 needs a JBR/JCEF build matching the process architecture.
+                    downloadJbrUsingPython("jbrsdk_jcef-21.0.11-windows-aarch64-b1163.116.tar.gz")
+                } else {
+                    downloadJbrUsingPython("jbrsdk_jcef-21.0.11-windows-x64-b1163.116.tar.gz")
+                }
                 uses(
                     name = "Setup JBR 21 for Windows",
                     action = SetupJava_Untyped(
@@ -1332,7 +1411,7 @@ class WithMatrix(
             }
 
             OS.UBUNTU -> {
-                val jbrLocationExpr = downloadJbrUsingPython("jbrsdk_jcef-21.0.5-linux-x64-b750.29.tar.gz")
+                val jbrLocationExpr = downloadJbrUsingPython("jbrsdk_jcef-21.0.11-linux-x64-b1163.116.tar.gz")
                 uses(
                     name = "Setup JBR 21 for Ubuntu",
                     action = SetupJava_Untyped(
@@ -1412,17 +1491,14 @@ class WithMatrix(
     /**
      * Returns the action step if it's enabled, otherwise returns `null`.
      */
-    fun JobBuilder<*>.prepareSigningKey(): ActionStep<Base64ToFile_Untyped.Outputs>? {
+    fun JobBuilder<*>.prepareSigningKey(): CommandStep? {
         return if (matrix.uploadApk) {
-            uses(
+            prepareBase64File(
                 name = "Prepare signing key",
                 `if` = expr { github.isAnimekoRepository and !github.isPullRequest },
-                action = Base64ToFile_Untyped(
-                    fileName_Untyped = "android_signing_key",
-                    fileDir_Untyped = "./",
-                    encodedString_Untyped = expr { secrets.SIGNING_RELEASE_STOREFILE },
-                ),
-                continueOnError = true,
+                fileName = "android_signing_key",
+                fileDir = ".",
+                encodedString = expr { secrets.SIGNING_RELEASE_STOREFILE },
             )
         } else {
             null
@@ -1432,16 +1508,51 @@ class WithMatrix(
     /**
      * Returns the action step if it's enabled, otherwise returns `null`.
      */
-    fun JobBuilder<*>.prepareGoogleServicesJson(): ActionStep<Base64ToFile_Untyped.Outputs>? {
-        return uses(
+    fun JobBuilder<*>.prepareGoogleServicesJson(): CommandStep {
+        return prepareBase64File(
             name = "Prepare google-services.json",
             `if` = expr { github.isAnimekoRepository and !github.isPullRequest },
-            action = Base64ToFile_Untyped(
-                fileName_Untyped = "google-services.json",
-                fileDir_Untyped = "./app/android",
-                encodedString_Untyped = expr { secrets.GOOGLE_SERVICES_JSON },
-            ),
+            fileName = "google-services.json",
+            fileDir = "./app/android",
+            encodedString = expr { secrets.GOOGLE_SERVICES_JSON },
+        )
+    }
+
+    fun JobBuilder<*>.prepareBase64File(
+        name: String,
+        @SuppressWarnings("FunctionParameterNaming")
+        `if`: String,
+        fileName: String,
+        fileDir: String,
+        encodedString: String,
+    ): CommandStep {
+        val filePath = "$fileDir/$fileName"
+        return run(
+            name = name,
+            `if` = `if`,
             continueOnError = true,
+            shell = Shell.Bash,
+            env = mapOf(
+                "BASE64_CONTENT" to encodedString,
+                "FILE_PATH" to filePath,
+            ),
+            command = shell(
+                $$"""
+                set -euo pipefail
+
+                if [ -z "${BASE64_CONTENT:-}" ]; then
+                  echo "BASE64_CONTENT is empty" >&2
+                  exit 1
+                fi
+
+                mkdir -p "$(dirname "$FILE_PATH")"
+                if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+                  printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+                fi
+                chmod 600 "$FILE_PATH"
+                echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
+                """.trimIndent(),
+            ),
         )
     }
 
@@ -1486,7 +1597,7 @@ class WithMatrix(
         }
     }
 
-    fun JobBuilder<*>.buildAndroidApk(prepareSigningKey: ActionStep<Base64ToFile_Untyped.Outputs>) {
+    fun JobBuilder<*>.buildAndroidApk(prepareSigningKey: CommandStep) {
         if (matrix.uploadApk) {
             runGradle(
                 name = "Build Android Debug APKs",
@@ -1518,7 +1629,7 @@ class WithMatrix(
                 `if` = expr { github.isAnimekoRepository and !github.isPullRequest },
                 tasks = arrayOf("assembleDefaultRelease"),
                 env = mapOf(
-                    "signing_release_storeFileFromRoot" to expr { prepareSigningKey.outputs.filePath },
+                    "signing_release_storeFileFromRoot" to expr { prepareSigningKey.outputs["filePath"] },
                     "signing_release_storePassword" to expr { secrets.SIGNING_RELEASE_STOREPASSWORD },
                     "signing_release_keyAlias" to expr { secrets.SIGNING_RELEASE_KEYALIAS },
                     "signing_release_keyPassword" to expr { secrets.SIGNING_RELEASE_KEYPASSWORD },
@@ -1608,7 +1719,12 @@ class WithMatrix(
         if (matrix.runTests) {
             runGradle(
                 name = "Check (Desktop)",
-                tasks = arrayOf("desktopTest"),
+                // There is no Windows ARM64 anitorrent runtime, so its native desktop tests cannot run here.
+                tasks = if (matrix.isWindowsAArch64) {
+                    arrayOf("desktopTest", "-x", ":torrent:anitorrent:desktopTest")
+                } else {
+                    arrayOf("desktopTest")
+                },
                 maxAttempts = 3,
                 timeoutMinutes = 180,
             )
@@ -1713,6 +1829,11 @@ class WithMatrix(
         }
 
         if (matrix.isUbuntu) {
+            run(
+                // isolateLinuxBundledLibraries needs it to give the bundled libraries a DT_RPATH.
+                name = "Install patchelf",
+                command = "sudo apt-get install -y patchelf",
+            )
             runGradle(
                 name = "Package Desktop",
                 tasks = arrayOf("createReleaseDistributable"),
@@ -1750,7 +1871,7 @@ class WithMatrix(
                 usesWithAttempts(
                     name = "Upload Windows packages",
                     action = UploadArtifact(
-                        name = ArtifactNames.windowsPortable(),
+                        name = ArtifactNames.windowsPortable(matrix.arch),
                         path_Untyped = "app/desktop/build/compose/binaries/main-release/app",
                         overwrite = true,
                         ifNoFilesFound = UploadArtifact.BehaviorIfNoFilesFound.Error,
@@ -1765,10 +1886,18 @@ class WithMatrix(
                         # Download appimagetool
                         wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
                         chmod +x appimagetool-x86_64.AppImage
+
+                        # Bundle the external updater. It is copied out of the read-only AppImage mount before use.
+                        appImageUpdateVersion="2.0.0-alpha-1-20251018"
+                        appImageUpdateTool="appimageupdatetool-x86_64.AppImage"
+                        wget "https://github.com/AppImageCommunity/AppImageUpdate/releases/download/$appImageUpdateVersion/$appImageUpdateTool"
+                        echo "d976cdac667b03dee8cb23fb95ef74b042c406c5cbab3ff294d2b16efeaff84f  $appImageUpdateTool" | sha256sum -c -
+                        chmod +x "$appImageUpdateTool"
                         
                         # Prepare AppDir
                         mkdir -p AppDir/usr
                         cp -r app/desktop/build/compose/binaries/main-release/app/Ani/* AppDir/usr
+                        cp "$appImageUpdateTool" AppDir/usr/lib/app/resources/
                         
                         cp app/desktop/appResources/linux-x64/AppRun AppDir/AppRun
                         cp app/desktop/appResources/linux-x64/animeko.desktop AppDir/animeko.desktop
@@ -1777,20 +1906,44 @@ class WithMatrix(
                         # Fix permissions
                         chmod a+x AppDir/AppRun
                         chmod a+x AppDir/usr/bin/Ani
-                        chmod a+x AppDir/usr/lib/runtime/lib/jcef_helper
+
+                        # The CEF helpers get their executable bit from restoreLinuxRuntimeExecutables,
+                        # so assert rather than chmod. A chmod here would keep the AppImage green while
+                        # the deb, the rpm and every direct user of createReleaseDistributable ship a
+                        # runtime whose helpers cannot be spawned (#3259).
+                        test -x AppDir/usr/lib/runtime/lib/jcef_helper
+                        test -x AppDir/usr/lib/runtime/lib/cef_server
                         
-                        # Build AppImage
-                        ARCH=x86_64 ./appimagetool-x86_64.AppImage AppDir
+                        # Build an AppImage whose zsync metadata points at this repository's release asset.
+                        # Build with the final release filename so the generated zsync metadata keeps that name,
+                        # then normalize the local filenames expected by the upload tasks below.
+                        releaseTag="$GITHUB_REF_NAME"
+                        releaseVersion="$(printf '%s' "$releaseTag" | sed 's/^v//')"
+                        # Pull request merge refs contain '/', which must not become a path separator here.
+                        releaseVersion="${releaseVersion//\//-}"
+                        releaseAsset="ani-$releaseVersion-linux-x86_64.appimage"
+                        updateInformation="zsync|https://github.com/$GITHUB_REPOSITORY/releases/download/$releaseTag/$releaseAsset.zsync"
+                        ARCH=x86_64 ./appimagetool-x86_64.AppImage \
+                          -u "$updateInformation" \
+                          AppDir \
+                          "$releaseAsset"
+                        # Keep the zsync reusable on GitHub, d.myani.org and compatible mirrors.
+                        sed -i "s|^URL:.*|URL: $releaseAsset|" "$releaseAsset.zsync"
+                        mv "$releaseAsset" Animeko-x86_64.AppImage
+                        mv "$releaseAsset.zsync" Animeko-x86_64.AppImage.zsync
                         """.trimIndent(),
                 )
-                // Expected output path: Animeko-x86_64.AppImage.
+                // Expected output paths: Animeko-x86_64.AppImage and Animeko-x86_64.AppImage.zsync.
                 // If changed, change also uploadDesktopDistributions in :ci-helper
 
                 usesWithAttempts(
                     name = "Upload Linux packages",
                     action = UploadArtifact(
                         name = ArtifactNames.linuxAppImage(matrix.arch),
-                        path_Untyped = "Animeko-x86_64.AppImage",
+                        path_Untyped = $$"""
+                            Animeko-x86_64.AppImage
+                            Animeko-x86_64.AppImage.zsync
+                            """.trimIndent(),
                         overwrite = true,
                         ifNoFilesFound = UploadArtifact.BehaviorIfNoFilesFound.Error,
                     ),
@@ -2008,6 +2161,7 @@ val MatrixInstance.isUnix get() = (os == OS.UBUNTU) or (os == (OS.MACOS))
 
 val MatrixInstance.isMacOSAArch64 get() = (os == OS.MACOS) and (arch == Arch.AARCH64)
 val MatrixInstance.isMacOSX64 get() = (os == OS.MACOS) and (arch == Arch.X64)
+val MatrixInstance.isWindowsAArch64 get() = (os == OS.WINDOWS) and (arch == Arch.AARCH64)
 
 // only for highlighting (though this does not work in KT 2.1.0)
 fun shell(@Language("shell") command: String) = command

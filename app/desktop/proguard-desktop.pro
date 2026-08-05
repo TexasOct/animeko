@@ -62,6 +62,14 @@
 -keep class com.sun.jna.** { *; } # native binding
 -keep class ** implements com.sun.jna.Callback { *; } # JNA callbacks are invoked via native reflection; ProGuard optimization must not remove or inline them
 
+-keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; } # JNI binds native methods by name; shrink/optimize must not remove or alter them
+-keep class org.openani.mediamp.mpv.** { *; } # libmediampv calls back into Java via FindClass/GetMethodID by name
+# libmediampv (mediamp-mpv/src/cpp/method_cache.cpp) also resolves this interface from
+# the mediamp-api `io` package via FindClass and invokes read([BII)I / seekTo(J)V /
+# close()V through GetMethodID — outside the mpv.** rule above. Keeping the interface
+# members also pins the override names in implementing classes.
+-keep class org.openani.mediamp.io.SeekableInput { *; }
+
 -keep class ** extends me.him188.ani.datasources.api.subject.SubjectProvider { *; }
 -keep class ** extends me.him188.ani.datasources.api.source.MediaSource { *; }
 -keep class ** extends me.him188.ani.datasources.api.source.MediaSourceFactory { *; }
@@ -110,6 +118,12 @@
 -keep @kotlinx.serialization.Serializable class * {*;} # Somehow kotlinx-serialization 官方的规则仍然会导致 Serializer not found, 所以干脆直接都 keep
 
 -keep class ** implements org.openani.mediamp.MediampPlayerFactory { *; }
+# ServiceLoader looks up META-INF/services/<interface binary name>; the interfaces must
+# keep their original names (mediamp-mpv registers MpvMediampPlayerSurfaceProvider and
+# MpvMediampPlayerFactory through these).
+-keep interface org.openani.mediamp.MediampPlayerFactory
+-keep interface org.openani.mediamp.compose.MediampPlayerSurfaceProvider
+-keep class ** implements org.openani.mediamp.compose.MediampPlayerSurfaceProvider { *; }
 
 -keep class ** extends com.sun.jna.Structure { *; } # JNA C struct
 -keep class ** extends com.sun.jna.Library { *; } # JNA
@@ -117,6 +131,13 @@
 -keep enum com.sun.jna.** { *; } # ProGuard bug https://github.com/Guardsquare/proguard/issues/450
 -keep class com.jthemedetecor.** { *; } #1404 OsThemeDetector
 -keep class oshi.** { *; } #1404 OsThemeDetector
+
+# ComposeSceneTouchBridge ProGuard rules
+-keep class androidx.compose.ui.awt.ComposeWindow { *; }
+-keep class androidx.compose.ui.awt.ComposePanel { *; }
+-keep class androidx.compose.ui.scene.ComposeContainer { *; }
+-keep class androidx.compose.ui.scene.ComposeSceneMediator { *; }
+-keep interface androidx.compose.ui.scene.ComposeScene { *; }
 
 # LayoutHitTestOwner ProGuard rules
 # 保持被反射调用的类

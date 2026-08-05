@@ -13,8 +13,6 @@ import org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask
 import org.jetbrains.compose.reload.gradle.ComposeHotRun
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.util.UUID
-import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -32,18 +30,38 @@ dependencies {
     implementation(libs.compose.components.resources)
     implementation(libs.compose.native.tray)
     implementation(libs.log4j.core)
-    implementation(libs.vlcj)
     implementation(libs.jsystemthemedetector)
     implementation(libs.bytebuddy.agent)
     implementation(libs.bytebuddy)
     implementation(libs.mediamp.ffmpeg.desktop)
+
     when (val triple = getOsTriple()) {
         "windows-x64" -> runtimeOnly(libs.mediamp.ffmpeg.runtime.windows.x64)
         "linux-x64" -> runtimeOnly(libs.mediamp.ffmpeg.runtime.linux.x64)
         "macos-x64" -> runtimeOnly(libs.mediamp.ffmpeg.runtime.macos.x64)
         "macos-arm64" -> runtimeOnly(libs.mediamp.ffmpeg.runtime.macos.arm64)
+        "windows-arm64" -> runtimeOnly(libs.mediamp.ffmpeg.runtime.windows.arm64)
         else -> throw UnsupportedOperationException("Unknown os: $triple")
     }
+
+    if (getLocalProperty("ani.build.mediamp.path") != null) {
+        runtimeOnly(libs.mediamp.mpv) {
+            capabilities {
+                requireCapability("org.openani.mediamp:mediamp-mpv-runtime-${getOsTriple()}")
+            }
+        }
+    } else {
+        when (val triple = getOsTriple()) {
+            "windows-x64" -> runtimeOnly(libs.mediamp.mpv.runtime.windows.x64)
+            "windows-arm64" -> runtimeOnly(libs.mediamp.mpv.runtime.windows.arm64)
+            "linux-x64" -> runtimeOnly(libs.mediamp.mpv.runtime.linux.x64)
+            "macos-arm64" -> runtimeOnly(libs.mediamp.mpv.runtime.macos.arm64)
+            else -> {}
+        }
+    }
+
+    // vlcj 依赖里没有 native libraries，依赖是手动放的
+    implementation(libs.vlcj)
 }
 
 // workaround for compose limitation
@@ -84,6 +102,8 @@ compose.desktop {
             "--add-opens=java.desktop/java.awt.peer=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
             "-XX:+EnableDynamicAgentLoading", // ByteBuddy agent
+            "--enable-native-access=ALL-UNNAMED",
+            "--enable-native-access=jcef",
         )
         if (getOs() == Os.MacOS) {
             jvmArgs(
@@ -314,52 +334,14 @@ tasks.withType(KotlinCompilationTask::class) {
 }
 
 //kotlin.sourceSets.main.get().resources.srcDir(project(":common").projectDir.resolve("src/androidMain/res/raw"))
-
-tasks.withType(AbstractJPackageTask::class) {
-    doLast {
-        val triple = getOsTriple()
-        fun unpackJar(jar: File, dest: File, filter: (ZipEntry) -> Boolean = { true }) {
-            val zip = ZipFile(jar)
-            zip.use {
-                zip.entries().asSequence().filter(filter).forEach { entry ->
-                    val file = dest.resolve(entry.name)
-                    if (entry.isDirectory) {
-                        file.mkdirs()
-                    } else {
-                        file.parentFile.mkdirs()
-                        zip.getInputStream(entry).use { input ->
-                            file.outputStream().use { output ->
-                                input.copyTo(output)
-                            }
-                        }
-                    }
-                }
-            }
+afterEvaluate {
+    tasks.named("createReleaseDistributable", AbstractJPackageTask::class) {
+        doLast {
+            unpackComposeDesktopNativeLibraries()
+            reconstructLinuxSolink()
+            isolateLinuxBundledLibraries()
+            restoreLinuxRuntimeExecutables()
         }
-
-        fun isRuntimePayloadJar(file: File): Boolean {
-            if (!file.isFile || file.extension != "jar") {
-                return false
-            }
-            val name = file.name
-            return name.startsWith("mediamp-mpv-runtime-") ||
-                    name.startsWith("mediamp-ffmpeg-runtime-") ||
-                    (name.startsWith("anitorrent-native-desktop-") && name.contains("-$triple-"))
-        }
-
-        destinationDir.get().asFile
-            .walk()
-            .filter(::isRuntimePayloadJar)
-            .forEach { jar ->
-                unpackJar(jar, jar.parentFile) {
-                    !(it.name.contains("MANIFEST") || it.name.contains("META-INF"))
-                }
-                jar.delete()
-
-                logger.lifecycle(
-                    "Extracted ${jar.name} into ${jar.parentFile} and deleted the jars",
-                )
-            }
     }
 }
 
@@ -385,7 +367,10 @@ afterEvaluate {
 }
 
 fun JavaExec.configureDevProperties() {
-    mainClass.set("me.him188.ani.app.desktop.AniDesktop")
+    // Override to run scratch mains (e.g. FullscreenTest): ./gradlew :app:desktop:run -Pani.desktop.mainClass=...
+    mainClass.set(
+        providers.gradleProperty("ani.desktop.mainClass").getOrElse("me.him188.ani.app.desktop.AniDesktop"),
+    )
     this.jvmArgs(
 //        "-XX:+UseZGC", // this may crash the VM
         "-Xmx512m",
@@ -394,5 +379,10 @@ fun JavaExec.configureDevProperties() {
     systemProperty("org.slf4j.simpleLogger.defaultLogLevel", "TRACE")
     systemProperty("kotlinx.coroutines.debug", "on")
     systemProperty("ani.debug", "true")
+    // Windows 原生触摸事件日志: ./gradlew :app:desktop:run -Pani.windows.nativeTouch.debug=true
+    systemProperty(
+        "ani.windows.nativeTouch.debug",
+        providers.gradleProperty("ani.windows.nativeTouch.debug").getOrElse("false"),
+    )
     workingDir(file("test-sandbox"))
 }

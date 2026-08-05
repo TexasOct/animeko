@@ -51,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
@@ -149,12 +150,14 @@ import me.him188.ani.app.ui.subject.episode.video.sidesheet.MediaSelectorSheet
 import me.him188.ani.app.ui.subject.episode.video.topbar.EpisodePlayerTitle
 import me.him188.ani.app.videoplayer.ui.PlaybackSpeedControllerState
 import me.him188.ani.app.videoplayer.ui.PlayerControllerState
+import me.him188.ani.app.videoplayer.ui.PlayerFocusState
 import me.him188.ani.app.videoplayer.ui.VideoAspectRatioControllerState
 import me.him188.ani.app.videoplayer.ui.gesture.LevelController
 import me.him188.ani.app.videoplayer.ui.gesture.NoOpLevelController
 import me.him188.ani.app.videoplayer.ui.gesture.asLevelController
 import me.him188.ani.app.videoplayer.ui.progress.PlayerControllerDefaults
 import me.him188.ani.app.videoplayer.ui.progress.PlayerControllerDefaults.rememberRandomDanmakuPlaceholder
+import me.him188.ani.app.videoplayer.ui.progress.rememberMediaProgressFramePreviewState
 import me.him188.ani.app.videoplayer.ui.progress.rememberMediaProgressSliderState
 import me.him188.ani.danmaku.api.DanmakuContent
 import me.him188.ani.danmaku.api.DanmakuLocation
@@ -212,6 +215,17 @@ private fun EpisodeScreenContent(
     val context by rememberUpdatedState(LocalContext.current)
     val window = LocalPlatformWindow.current
     val scope = rememberCoroutineScope()
+
+    // 若窗口置顶是通过播放器内按钮开启的, 退出播放页时自动取消置顶
+    DisposableEffect(window, vm) {
+        onDispose {
+            if (vm.desktopAlwaysOnTopSetByPlayer) {
+                vm.desktopAlwaysOnTopSetByPlayer = false
+                window.setAlwaysOnTop(false)
+            }
+        }
+    }
+
     BackHandler(enabled = vm.isFullscreen) {
         scope.launch {
             context.setRequestFullScreen(window, false)
@@ -224,6 +238,7 @@ private fun EpisodeScreenContent(
     BackHandler(enabled = imageViewer.viewing.value) { imageViewer.clear() }
 
     val playbackState by vm.player.playbackState.collectAsStateWithLifecycle()
+    val playbackAutomationSuppressed by vm.playbackAutomationSuppressed.collectAsStateWithLifecycle()
     if (playbackState.isPlaying) {
         ScreenOnEffect()
     }
@@ -232,7 +247,9 @@ private fun EpisodeScreenContent(
     var didSetPaused by rememberSaveable { mutableStateOf(false) }
 
     val pauseOnPlaying: () -> Unit = {
-        if (vm.player.playbackState.value.isPlaying) {
+        if (playbackAutomationSuppressed) {
+            didSetPaused = false
+        } else if (vm.player.playbackState.value.isPlaying) {
             didSetPaused = true
             vm.player.pause()
         } else {
@@ -240,13 +257,13 @@ private fun EpisodeScreenContent(
         }
     }
     val tryUnpause: () -> Unit = {
-        if (didSetPaused) {
+        if (didSetPaused && !playbackAutomationSuppressed) {
             didSetPaused = false
             vm.player.resume()
         }
     }
 
-    AutoPauseEffect(vm)
+    AutoPauseEffect(vm, enabled = !playbackAutomationSuppressed)
     DisplayModeEffect(vm.videoScaffoldConfig)
 
     VideoNotifEffect(vm)
@@ -381,7 +398,6 @@ private fun EpisodeScreenContent(
     if (showEditCommentSheet) {
         EpisodeEditCommentSheet(
             state = vm.commentEditorState,
-            turnstileState = vm.turnstileState,
             onDismiss = {
                 showEditCommentSheet = false
                 vm.commentEditorState.cancelSend()
@@ -771,7 +787,9 @@ private fun EpisodeScreenContentPhone(
                     }
                 },
                 focusRequester,
-                Modifier.imePadding(),
+                vm.playerControllerState.focusState,
+                onDismiss = dismiss,
+                modifier = Modifier.imePadding(),
             )
             LaunchedEffect(true) {
                 focusRequester.requestFocus()
@@ -785,6 +803,8 @@ private fun DetachedDanmakuEditorLayout(
     danmakuEditorState: DanmakuEditorState,
     onSend: (text: String) -> Unit,
     focusRequester: FocusRequester,
+    playerFocusState: PlayerFocusState,
+    onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.padding(all = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -796,7 +816,9 @@ private fun DetachedDanmakuEditorLayout(
             isSending = { isSending.value },
             placeholderText = rememberRandomDanmakuPlaceholder(),
             onSend = onSend,
-            Modifier.fillMaxWidth().focusRequester(focusRequester),
+            playerFocusState = playerFocusState,
+            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+            onEscape = onDismiss,
             colors = OutlinedTextFieldDefaults.colors(),
         )
     }
@@ -875,6 +897,7 @@ private fun EpisodeVideo(
 ) {
     val context by rememberUpdatedState(LocalContext.current)
     val navigator = LocalNavigator.current
+    val isAndroid = LocalPlatform.current.isAndroid()
 
     // Don't rememberSavable. 刻意让每次切换都是隐藏的
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
@@ -899,6 +922,11 @@ private fun EpisodeVideo(
             vm.player.seekTo(it)
         },
     )
+    val framePreview = if (vm.videoScaffoldConfig.enableFramePreview) {
+        rememberMediaProgressFramePreviewState(vm.player)
+    } else {
+        null
+    }
     val scope = rememberCoroutineScope()
 
     // 必须在 UI 里, 跟随 context 变化. 否则 #958
@@ -927,7 +955,8 @@ private fun EpisodeVideo(
         hasNextEpisode = vm.episodeSelectorState.hasNextEpisode,
         onClickNextEpisode = { vm.episodeSelectorState.selectNext() },
         playerControllerState = playerControllerState,
-        onClickSkip85 = { vm.onClickSkip85(it) },
+        opEdSkipDuration = vm.videoScaffoldConfig.opEdSkipDuration,
+        onClickSkipOpEd = { vm.onClickSkipOpEd(it) },
         title = {
             val episode = page.episodePresentation
             val subject = page.subjectPresentation
@@ -951,6 +980,12 @@ private fun EpisodeVideo(
                 vm.isFullscreen = false
             }
         },
+        alwaysOnTop = window.isAlwaysOnTop,
+        onToggleAlwaysOnTop = {
+            val newValue = !window.isAlwaysOnTop
+            window.setAlwaysOnTop(newValue)
+            vm.desktopAlwaysOnTopSetByPlayer = newValue
+        },
         danmakuEditor = {
             PlayerDanmakuEditor(
                 danmakuEditorState,
@@ -969,7 +1004,11 @@ private fun EpisodeVideo(
             // 条目ID-剧集序号-视频时间点.png
             val filename = "${vm.subjectId}-${page.episodePresentation.ep}-${currentPosition}.png"
             scope.launch {
-                vm.player.features[Screenshots]?.takeScreenshot(filename)
+                if (isAndroid) {
+                    takeAndroidPlayerScreenshot(context, vm.player, filename)
+                } else {
+                    vm.player.features[Screenshots]?.takeScreenshot(filename)
+                }
             }
         },
         detachedProgressSlider = {
@@ -977,6 +1016,8 @@ private fun EpisodeVideo(
                 progressSliderState,
                 cacheProgressInfoFlow = vm.cacheProgressInfoFlow,
                 enabled = false,
+                framePreview = framePreview,
+                showFramePreviewInPopup = expanded,
             )
         },
         sidebarVisible = vm.sidebarVisible,
@@ -985,6 +1026,7 @@ private fun EpisodeVideo(
         },
         progressSliderState = progressSliderState,
         cacheProgressInfoFlow = vm.cacheProgressInfoFlow,
+        framePreview = framePreview,
         audioController = remember {
             derivedStateOf {
                 platformComponents.audioManager?.asLevelController(StreamType.MUSIC)
@@ -998,8 +1040,18 @@ private fun EpisodeVideo(
                 platformComponents.brightnessManager?.asLevelController() ?: NoOpLevelController
             }
         }.value,
-        playbackSpeedControllerState = remember {
-            vm.player.features[PlaybackSpeed]?.let { PlaybackSpeedControllerState(it, scope = scope) }
+        playbackSpeedControllerState = run {
+            val playbackSpeed = vm.player.features[PlaybackSpeed]
+            remember(playbackSpeed) {
+                playbackSpeed?.let {
+                    PlaybackSpeedControllerState(
+                        playbackSpeed = it,
+                        rangeProvider = { vm.playbackSpeedRange },
+                        onCommitSpeed = { speed -> vm.setPlaybackSpeed(speed) },
+                        scope = scope,
+                    )
+                }
+            }
         },
         videoAspectRatioControllerState = remember {
             vm.player.features[VideoAspectRatio]?.let { VideoAspectRatioControllerState(it, scope = scope) }
@@ -1129,9 +1181,9 @@ private fun EpisodeCommentColumn(
  * 切后台自动暂停
  */
 @Composable
-private fun AutoPauseEffect(viewModel: EpisodeViewModel) {
+private fun AutoPauseEffect(viewModel: EpisodeViewModel, enabled: Boolean) {
     var pausedVideo by rememberSaveable { mutableStateOf(true) } // live after configuration change
-    if (LocalIsPreviewing.current) return
+    if (LocalIsPreviewing.current || !enabled) return
 
     val autoPauseTasker = rememberUiMonoTasker()
     OnLifecycleEvent {

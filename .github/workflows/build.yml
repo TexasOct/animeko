@@ -72,8 +72,8 @@ jobs:
       name: 'Get JBR (Windows)'
       env:
         RUNNER_TOOL_CACHE: '${{ runner.tool_cache }}'
-        JBR_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.5-windows-x64-b750.29.tar.gz'
-        JBR_CHECKSUM_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.5-windows-x64-b750.29.tar.gz.checksum'
+        JBR_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-windows-x64-b1163.116.tar.gz'
+        JBR_CHECKSUM_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-windows-x64-b1163.116.tar.gz.checksum'
       shell: 'cmd'
       run: 'python .github/workflows/download_jbr.py'
     - id: 'step-5'
@@ -117,12 +117,25 @@ jobs:
       if: '${{ steps.step-10.outcome == ''failure'' }}'
     - id: 'step-12'
       name: 'Prepare google-services.json'
+      env:
+        BASE64_CONTENT: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+        FILE_PATH: './app/android/google-services.json'
       continue-on-error: true
-      uses: 'timheuer/base64-to-file@v1.1'
-      with:
-        fileName: 'google-services.json'
-        fileDir: './app/android'
-        encodedString: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+      shell: 'bash'
+      run: |-
+        set -euo pipefail
+
+        if [ -z "${BASE64_CONTENT:-}" ]; then
+          echo "BASE64_CONTENT is empty" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$FILE_PATH")"
+        if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+          printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+        fi
+        chmod 600 "$FILE_PATH"
+        echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
     - id: 'step-13'
       name: 'Compile Kotlin (Attempt #1)'
@@ -227,6 +240,213 @@ jobs:
       timeout-minutes: 180
       run: './gradlew testAndroidHostTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" "-DBoost_INCLUDE_DIR=C:/vcpkg/installed/x64-windows/include" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel"'
       if: '${{ steps.step-27.outcome == ''failure'' }}'
+  build_github-windows-11-arm64:
+    name: 'Build (Windows 11 AArch64 (GitHub))'
+    runs-on:
+    - 'windows-11-arm'
+    permissions:
+      actions: 'write'
+    steps:
+    - id: 'step-0'
+      uses: 'actions/checkout@v4'
+      with:
+        submodules: 'recursive'
+    - id: 'step-1'
+      continue-on-error: true
+      run: 'rm local.properties'
+    - id: 'step-2'
+      continue-on-error: true
+      run: |
+        echo "ani.android.abis=arm64-v8a" >> local.properties
+        echo "ani.dandanplay.app.id=${{ secrets.DANDANPLAY_APP_ID }}" >> local.properties
+        echo "ani.dandanplay.app.secret=${{ secrets.DANDANPLAY_APP_SECRET }}" >> local.properties
+        echo "ani.sentry.dsn=${{ secrets.SENTRY_DSN }}" >> local.properties
+        echo "kotlin.native.ignoreDisabledTargets=true" >> local.properties
+    - id: 'step-3'
+      continue-on-error: true
+      run: |
+        echo "ani.enable.firebase=true" >> local.properties
+        echo "firebase.ga.app.id=${{ secrets.FIREBASE_GA_APP_ID }}" >> local.properties
+        echo "firebase.ga.api.secret=${{ secrets.FIREBASE_GA_API_SECRET }}" >> local.properties
+      if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
+    - id: 'step-4'
+      name: 'Setup Android SDK'
+      uses: 'android-actions/setup-android@v3'
+      with:
+        accept-android-sdk-licenses: 'true'
+        packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+    - id: 'step-5'
+      name: 'Get JBR (Windows)'
+      env:
+        RUNNER_TOOL_CACHE: '${{ runner.tool_cache }}'
+        JBR_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-windows-aarch64-b1163.116.tar.gz'
+        JBR_CHECKSUM_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-windows-aarch64-b1163.116.tar.gz.checksum'
+      shell: 'cmd'
+      run: 'python .github/workflows/download_jbr.py'
+    - id: 'step-6'
+      name: 'Setup JBR 21 for Windows'
+      uses: 'gmitch215/setup-java@6d2c5e1f82f180ae79f799f0ed6e3e5efb4e664d'
+      with:
+        java-version: '21'
+        distribution: 'jdkfile'
+        jdkFile: '${{ steps.step-5.outputs.jbrLocation }}'
+      env:
+        GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+    - id: 'step-7'
+      name: 'Dump Local Properties'
+      run: 'echo "jvm.toolchain.version=21" >> local.properties'
+    - id: 'step-8'
+      name: 'Setup Gradle'
+      uses: 'gradle/actions/setup-gradle@v3'
+      with:
+        cache-disabled: 'true'
+    - id: 'step-9'
+      name: 'Clean and download dependencies (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew --scan "--stacktrace" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-10'
+      name: 'Clean and download dependencies (Attempt #2)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew --scan "--stacktrace" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-9.outcome == ''failure'' }}'
+    - id: 'step-11'
+      name: 'Update dev version name (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew updateDevVersionNameFromGit "--no-configuration-cache" "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-12'
+      name: 'Update dev version name (Attempt #2)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew updateDevVersionNameFromGit "--no-configuration-cache" "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-11.outcome == ''failure'' }}'
+    - id: 'step-13'
+      name: 'Prepare google-services.json'
+      env:
+        BASE64_CONTENT: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+        FILE_PATH: './app/android/google-services.json'
+      continue-on-error: true
+      shell: 'bash'
+      run: |-
+        set -euo pipefail
+
+        if [ -z "${BASE64_CONTENT:-}" ]; then
+          echo "BASE64_CONTENT is empty" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$FILE_PATH")"
+        if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+          printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+        fi
+        chmod 600 "$FILE_PATH"
+        echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
+      if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
+    - id: 'step-14'
+      name: 'Compile Kotlin (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew compileKotlin compileCommonMainKotlinMetadata compileJvmMainKotlinMetadata compileKotlinDesktop compileKotlinMetadata "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-15'
+      name: 'Compile Kotlin (Attempt #2)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew compileKotlin compileCommonMainKotlinMetadata compileJvmMainKotlinMetadata compileKotlinDesktop compileKotlinMetadata "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-14.outcome == ''failure'' }}'
+    - id: 'step-16'
+      name: 'Compile Kotlin Android (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew compileDefaultDebugKotlin compileDefaultReleaseKotlin "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-17'
+      name: 'Compile Kotlin Android (Attempt #2)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew compileDefaultDebugKotlin compileDefaultReleaseKotlin "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-16.outcome == ''failure'' }}'
+    - id: 'step-18'
+      name: 'Package Desktop (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew createReleaseDistributable "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-19'
+      name: 'Package Desktop (Attempt #2)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew createReleaseDistributable "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-18.outcome == ''failure'' }}'
+    - id: 'step-20'
+      name: 'Upload compose logs'
+      uses: 'actions/upload-artifact@v4'
+      with:
+        name: 'compose-logs-github-windows-11-arm64'
+        path: 'app/desktop/build/compose/logs'
+      if: '${{ always() }}'
+    - id: 'step-21'
+      name: 'Upload Windows packages (Attempt #1)'
+      continue-on-error: true
+      uses: 'actions/upload-artifact@v4'
+      with:
+        name: 'ani-windows-aarch64-portable'
+        path: 'app/desktop/build/compose/binaries/main-release/app'
+        if-no-files-found: 'error'
+        overwrite: 'true'
+    - id: 'step-22'
+      name: 'Upload Windows packages (Attempt #2)'
+      continue-on-error: true
+      uses: 'actions/upload-artifact@v4'
+      with:
+        name: 'ani-windows-aarch64-portable'
+        path: 'app/desktop/build/compose/binaries/main-release/app'
+        if-no-files-found: 'error'
+        overwrite: 'true'
+      if: '${{ steps.step-21.outcome == ''failure'' }}'
+    - id: 'step-23'
+      name: 'Upload Windows packages (Attempt #3)'
+      continue-on-error: false
+      uses: 'actions/upload-artifact@v4'
+      with:
+        name: 'ani-windows-aarch64-portable'
+        path: 'app/desktop/build/compose/binaries/main-release/app'
+        if-no-files-found: 'error'
+        overwrite: 'true'
+      if: '${{ steps.step-22.outcome == ''failure'' }}'
+    - id: 'step-24'
+      name: 'Check (Desktop) (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew desktopTest -x :torrent:anitorrent:desktopTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-25'
+      name: 'Check (Desktop) (Attempt #2)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew desktopTest -x :torrent:anitorrent:desktopTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-24.outcome == ''failure'' }}'
+    - id: 'step-26'
+      name: 'Check (Desktop) (Attempt #3)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew desktopTest -x :torrent:anitorrent:desktopTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-25.outcome == ''failure'' }}'
+    - id: 'step-27'
+      name: 'Check (Android Host) (Attempt #1)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew testAndroidHostTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+    - id: 'step-28'
+      name: 'Check (Android Host) (Attempt #2)'
+      continue-on-error: true
+      timeout-minutes: 180
+      run: './gradlew testAndroidHostTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-27.outcome == ''failure'' }}'
+    - id: 'step-29'
+      name: 'Check (Android Host) (Attempt #3)'
+      continue-on-error: false
+      timeout-minutes: 180
+      run: './gradlew testAndroidHostTest "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx4g -Dkotlin.daemon.jvm.options=-Xmx4g" "-Dkotlin.daemon.jvm.options=-Xmx4g" "--parallel" "--no-configuration-cache"'
+      if: '${{ steps.step-28.outcome == ''failure'' }}'
   build_github-ubuntu-2404:
     name: 'Build (Ubuntu 24.04 x86_64 (GitHub))'
     runs-on:
@@ -274,8 +494,8 @@ jobs:
       name: 'Get JBR (Windows)'
       env:
         RUNNER_TOOL_CACHE: '${{ runner.tool_cache }}'
-        JBR_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.5-linux-x64-b750.29.tar.gz'
-        JBR_CHECKSUM_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.5-linux-x64-b750.29.tar.gz.checksum'
+        JBR_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-linux-x64-b1163.116.tar.gz'
+        JBR_CHECKSUM_URL: 'https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-linux-x64-b1163.116.tar.gz.checksum'
       shell: 'bash'
       run: 'python .github/workflows/download_jbr.py'
     - id: 'step-7'
@@ -321,21 +541,47 @@ jobs:
       if: '${{ steps.step-13.outcome == ''failure'' }}'
     - id: 'step-15'
       name: 'Prepare signing key'
+      env:
+        BASE64_CONTENT: '${{ secrets.SIGNING_RELEASE_STOREFILE }}'
+        FILE_PATH: './android_signing_key'
       continue-on-error: true
-      uses: 'timheuer/base64-to-file@v1.1'
-      with:
-        fileName: 'android_signing_key'
-        fileDir: './'
-        encodedString: '${{ secrets.SIGNING_RELEASE_STOREFILE }}'
+      shell: 'bash'
+      run: |-
+        set -euo pipefail
+
+        if [ -z "${BASE64_CONTENT:-}" ]; then
+          echo "BASE64_CONTENT is empty" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$FILE_PATH")"
+        if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+          printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+        fi
+        chmod 600 "$FILE_PATH"
+        echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
     - id: 'step-16'
       name: 'Prepare google-services.json'
+      env:
+        BASE64_CONTENT: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+        FILE_PATH: './app/android/google-services.json'
       continue-on-error: true
-      uses: 'timheuer/base64-to-file@v1.1'
-      with:
-        fileName: 'google-services.json'
-        fileDir: './app/android'
-        encodedString: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+      shell: 'bash'
+      run: |-
+        set -euo pipefail
+
+        if [ -z "${BASE64_CONTENT:-}" ]; then
+          echo "BASE64_CONTENT is empty" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$FILE_PATH")"
+        if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+          printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+        fi
+        chmod 600 "$FILE_PATH"
+        echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
     - id: 'step-17'
       name: 'Compile Kotlin (Attempt #1)'
@@ -601,33 +847,44 @@ jobs:
         overwrite: 'true'
       if: '${{ steps.step-47.outcome == ''failure'' }}'
     - id: 'step-49'
+      name: 'Install patchelf'
+      run: 'sudo apt-get install -y patchelf'
+    - id: 'step-50'
       name: 'Package Desktop (Attempt #1)'
       continue-on-error: true
       timeout-minutes: 180
       run: './gradlew createReleaseDistributable "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx8g -Dkotlin.daemon.jvm.options=-Xmx6g" "-Dkotlin.daemon.jvm.options=-Xmx6g"'
-    - id: 'step-50'
+    - id: 'step-51'
       name: 'Package Desktop (Attempt #2)'
       continue-on-error: false
       timeout-minutes: 180
       run: './gradlew createReleaseDistributable "--scan" "-Porg.gradle.daemon.idletimeout=60000" "-Dfile.encoding=UTF-8" "-Dorg.gradle.jvmargs=-Xmx8g -Dkotlin.daemon.jvm.options=-Xmx6g" "-Dkotlin.daemon.jvm.options=-Xmx6g"'
-      if: '${{ steps.step-49.outcome == ''failure'' }}'
-    - id: 'step-51'
+      if: '${{ steps.step-50.outcome == ''failure'' }}'
+    - id: 'step-52'
       name: 'Upload compose logs'
       uses: 'actions/upload-artifact@v4'
       with:
         name: 'compose-logs-github-ubuntu-2404'
         path: 'app/desktop/build/compose/logs'
       if: '${{ always() }}'
-    - id: 'step-52'
+    - id: 'step-53'
       name: 'Build AppImage'
       run: |-
         # Download appimagetool
         wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
         chmod +x appimagetool-x86_64.AppImage
 
+        # Bundle the external updater. It is copied out of the read-only AppImage mount before use.
+        appImageUpdateVersion="2.0.0-alpha-1-20251018"
+        appImageUpdateTool="appimageupdatetool-x86_64.AppImage"
+        wget "https://github.com/AppImageCommunity/AppImageUpdate/releases/download/$appImageUpdateVersion/$appImageUpdateTool"
+        echo "d976cdac667b03dee8cb23fb95ef74b042c406c5cbab3ff294d2b16efeaff84f  $appImageUpdateTool" | sha256sum -c -
+        chmod +x "$appImageUpdateTool"
+
         # Prepare AppDir
         mkdir -p AppDir/usr
         cp -r app/desktop/build/compose/binaries/main-release/app/Ani/* AppDir/usr
+        cp "$appImageUpdateTool" AppDir/usr/lib/app/resources/
 
         cp app/desktop/appResources/linux-x64/AppRun AppDir/AppRun
         cp app/desktop/appResources/linux-x64/animeko.desktop AppDir/animeko.desktop
@@ -636,39 +893,66 @@ jobs:
         # Fix permissions
         chmod a+x AppDir/AppRun
         chmod a+x AppDir/usr/bin/Ani
-        chmod a+x AppDir/usr/lib/runtime/lib/jcef_helper
 
-        # Build AppImage
-        ARCH=x86_64 ./appimagetool-x86_64.AppImage AppDir
-    - id: 'step-53'
+        # The CEF helpers get their executable bit from restoreLinuxRuntimeExecutables,
+        # so assert rather than chmod. A chmod here would keep the AppImage green while
+        # the deb, the rpm and every direct user of createReleaseDistributable ship a
+        # runtime whose helpers cannot be spawned (#3259).
+        test -x AppDir/usr/lib/runtime/lib/jcef_helper
+        test -x AppDir/usr/lib/runtime/lib/cef_server
+
+        # Build an AppImage whose zsync metadata points at this repository's release asset.
+        # Build with the final release filename so the generated zsync metadata keeps that name,
+        # then normalize the local filenames expected by the upload tasks below.
+        releaseTag="$GITHUB_REF_NAME"
+        releaseVersion="$(printf '%s' "$releaseTag" | sed 's/^v//')"
+        # Pull request merge refs contain '/', which must not become a path separator here.
+        releaseVersion="${releaseVersion//\//-}"
+        releaseAsset="ani-$releaseVersion-linux-x86_64.appimage"
+        updateInformation="zsync|https://github.com/$GITHUB_REPOSITORY/releases/download/$releaseTag/$releaseAsset.zsync"
+        ARCH=x86_64 ./appimagetool-x86_64.AppImage \
+          -u "$updateInformation" \
+          AppDir \
+          "$releaseAsset"
+        # Keep the zsync reusable on GitHub, d.myani.org and compatible mirrors.
+        sed -i "s|^URL:.*|URL: $releaseAsset|" "$releaseAsset.zsync"
+        mv "$releaseAsset" Animeko-x86_64.AppImage
+        mv "$releaseAsset.zsync" Animeko-x86_64.AppImage.zsync
+    - id: 'step-54'
       name: 'Upload Linux packages (Attempt #1)'
       continue-on-error: true
       uses: 'actions/upload-artifact@v4'
       with:
         name: 'ani-linux-appimage-x64'
-        path: 'Animeko-x86_64.AppImage'
+        path: |-
+          Animeko-x86_64.AppImage
+          Animeko-x86_64.AppImage.zsync
         if-no-files-found: 'error'
         overwrite: 'true'
-    - id: 'step-54'
+    - id: 'step-55'
       name: 'Upload Linux packages (Attempt #2)'
       continue-on-error: true
       uses: 'actions/upload-artifact@v4'
       with:
         name: 'ani-linux-appimage-x64'
-        path: 'Animeko-x86_64.AppImage'
+        path: |-
+          Animeko-x86_64.AppImage
+          Animeko-x86_64.AppImage.zsync
         if-no-files-found: 'error'
         overwrite: 'true'
-      if: '${{ steps.step-53.outcome == ''failure'' }}'
-    - id: 'step-55'
+      if: '${{ steps.step-54.outcome == ''failure'' }}'
+    - id: 'step-56'
       name: 'Upload Linux packages (Attempt #3)'
       continue-on-error: false
       uses: 'actions/upload-artifact@v4'
       with:
         name: 'ani-linux-appimage-x64'
-        path: 'Animeko-x86_64.AppImage'
+        path: |-
+          Animeko-x86_64.AppImage
+          Animeko-x86_64.AppImage.zsync
         if-no-files-found: 'error'
         overwrite: 'true'
-      if: '${{ steps.step-54.outcome == ''failure'' }}'
+      if: '${{ steps.step-55.outcome == ''failure'' }}'
   build_github-macos-15-intel:
     name: 'Build (macOS 15 x86_64 (GitHub))'
     runs-on:
@@ -708,7 +992,7 @@ jobs:
       shell: 'bash'
       run: |-
         # Expand jbrLocationExpr
-        jbr_location_expr='${{ runner.tool_cache }}/jbrsdk_jcef-21.0.6-osx-x64-b895.91.tar.gz'
+        jbr_location_expr='${{ runner.tool_cache }}/jbrsdk_jcef-21.0.11-osx-x64-b1163.116.tar.gz'
         echo "jbrLocation=$jbr_location_expr" >> $GITHUB_OUTPUT
     - id: 'step-6'
       name: 'Get JBR 21 for macOS AArch64 (Attempt #1)'
@@ -719,7 +1003,7 @@ jobs:
       shell: 'bash'
       run: |-
         jbr_location="$jbrLocation"
-        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.6-osx-x64-b895.91.tar.gz.checksum"
+        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-x64-b1163.116.tar.gz.checksum"
         checksum_file="checksum.tmp"
         wget -q -O $checksum_file $checksum_url
 
@@ -731,7 +1015,7 @@ jobs:
         fi
 
         if [ "$file_checksum" != "$expected_checksum" ]; then
-            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.6-osx-x64-b895.91.tar.gz -O "$jbr_location"
+            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-x64-b1163.116.tar.gz -O "$jbr_location"
             file_checksum=$(shasum -a 512 "$jbr_location" | awk '{print $1}')
         fi
 
@@ -752,7 +1036,7 @@ jobs:
       shell: 'bash'
       run: |-
         jbr_location="$jbrLocation"
-        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.6-osx-x64-b895.91.tar.gz.checksum"
+        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-x64-b1163.116.tar.gz.checksum"
         checksum_file="checksum.tmp"
         wget -q -O $checksum_file $checksum_url
 
@@ -764,7 +1048,7 @@ jobs:
         fi
 
         if [ "$file_checksum" != "$expected_checksum" ]; then
-            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.6-osx-x64-b895.91.tar.gz -O "$jbr_location"
+            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-x64-b1163.116.tar.gz -O "$jbr_location"
             file_checksum=$(shasum -a 512 "$jbr_location" | awk '{print $1}')
         fi
 
@@ -820,12 +1104,25 @@ jobs:
       if: '${{ steps.step-14.outcome == ''failure'' }}'
     - id: 'step-16'
       name: 'Prepare google-services.json'
+      env:
+        BASE64_CONTENT: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+        FILE_PATH: './app/android/google-services.json'
       continue-on-error: true
-      uses: 'timheuer/base64-to-file@v1.1'
-      with:
-        fileName: 'google-services.json'
-        fileDir: './app/android'
-        encodedString: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+      shell: 'bash'
+      run: |-
+        set -euo pipefail
+
+        if [ -z "${BASE64_CONTENT:-}" ]; then
+          echo "BASE64_CONTENT is empty" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$FILE_PATH")"
+        if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+          printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+        fi
+        chmod 600 "$FILE_PATH"
+        echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
     - id: 'step-17'
       name: 'Compile Kotlin (Attempt #1)'
@@ -924,7 +1221,7 @@ jobs:
       shell: 'bash'
       run: |-
         # Expand jbrLocationExpr
-        jbr_location_expr='${{ runner.tool_cache }}/jbrsdk_jcef-21.0.8-osx-aarch64-b1038.68.tar.gz'
+        jbr_location_expr='${{ runner.tool_cache }}/jbrsdk_jcef-21.0.11-osx-aarch64-b1163.116.tar.gz'
         echo "jbrLocation=$jbr_location_expr" >> $GITHUB_OUTPUT
     - id: 'step-5'
       name: 'Get JBR 21 for macOS AArch64 (Attempt #1)'
@@ -935,7 +1232,7 @@ jobs:
       shell: 'bash'
       run: |-
         jbr_location="$jbrLocation"
-        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.8-osx-aarch64-b1038.68.tar.gz.checksum"
+        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-aarch64-b1163.116.tar.gz.checksum"
         checksum_file="checksum.tmp"
         wget -q -O $checksum_file $checksum_url
 
@@ -947,7 +1244,7 @@ jobs:
         fi
 
         if [ "$file_checksum" != "$expected_checksum" ]; then
-            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.8-osx-aarch64-b1038.68.tar.gz -O "$jbr_location"
+            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-aarch64-b1163.116.tar.gz -O "$jbr_location"
             file_checksum=$(shasum -a 512 "$jbr_location" | awk '{print $1}')
         fi
 
@@ -968,7 +1265,7 @@ jobs:
       shell: 'bash'
       run: |-
         jbr_location="$jbrLocation"
-        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.8-osx-aarch64-b1038.68.tar.gz.checksum"
+        checksum_url="https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-aarch64-b1163.116.tar.gz.checksum"
         checksum_file="checksum.tmp"
         wget -q -O $checksum_file $checksum_url
 
@@ -980,7 +1277,7 @@ jobs:
         fi
 
         if [ "$file_checksum" != "$expected_checksum" ]; then
-            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.8-osx-aarch64-b1038.68.tar.gz -O "$jbr_location"
+            wget -q --tries=3 https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk_jcef-21.0.11-osx-aarch64-b1163.116.tar.gz -O "$jbr_location"
             file_checksum=$(shasum -a 512 "$jbr_location" | awk '{print $1}')
         fi
 
@@ -1036,12 +1333,25 @@ jobs:
       if: '${{ steps.step-13.outcome == ''failure'' }}'
     - id: 'step-15'
       name: 'Prepare google-services.json'
+      env:
+        BASE64_CONTENT: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+        FILE_PATH: './app/android/google-services.json'
       continue-on-error: true
-      uses: 'timheuer/base64-to-file@v1.1'
-      with:
-        fileName: 'google-services.json'
-        fileDir: './app/android'
-        encodedString: '${{ secrets.GOOGLE_SERVICES_JSON }}'
+      shell: 'bash'
+      run: |-
+        set -euo pipefail
+
+        if [ -z "${BASE64_CONTENT:-}" ]; then
+          echo "BASE64_CONTENT is empty" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$FILE_PATH")"
+        if ! printf '%s' "$BASE64_CONTENT" | base64 --decode > "$FILE_PATH" 2>/dev/null; then
+          printf '%s' "$BASE64_CONTENT" | base64 -D > "$FILE_PATH"
+        fi
+        chmod 600 "$FILE_PATH"
+        echo "filePath=$FILE_PATH" >> "$GITHUB_OUTPUT"
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
     - id: 'step-16'
       name: 'Compile Kotlin (Attempt #1)'
@@ -1371,6 +1681,51 @@ jobs:
       shell: 'powershell'
       run: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}/ci-helper/verify/run-ani-test-windows-x64.ps1" "${{ github.workspace }}\ci-helper\verify" "sentry-dsn"'
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
+  verify_github-windows-11-arm64:
+    name: 'Verify (Windows 11 AArch64 (GitHub))'
+    runs-on:
+    - 'windows-11-arm'
+    permissions:
+      actions: 'read'
+    needs:
+    - 'build_github-windows-11-arm64'
+    if: '${{ needs.build_github-windows-11-arm64.result == ''success'' }}'
+    steps:
+    - id: 'step-0'
+      uses: 'actions/checkout@v4'
+    - id: 'step-1'
+      name: 'Download Windows AArch64 Portable (Attempt #1)'
+      continue-on-error: true
+      uses: 'actions/download-artifact@v4'
+      with:
+        name: 'ani-windows-aarch64-portable'
+        path: '${{ github.workspace }}/ci-helper/verify'
+    - id: 'step-2'
+      name: 'Download Windows AArch64 Portable (Attempt #2)'
+      continue-on-error: true
+      uses: 'actions/download-artifact@v4'
+      with:
+        name: 'ani-windows-aarch64-portable'
+        path: '${{ github.workspace }}/ci-helper/verify'
+      if: '${{ steps.step-1.outcome == ''failure'' }}'
+    - id: 'step-3'
+      name: 'Download Windows AArch64 Portable (Attempt #3)'
+      continue-on-error: false
+      uses: 'actions/download-artifact@v4'
+      with:
+        name: 'ani-windows-aarch64-portable'
+        path: '${{ github.workspace }}/ci-helper/verify'
+      if: '${{ steps.step-2.outcome == ''failure'' }}'
+    - id: 'step-4'
+      name: 'Check that MediaMP FFmpeg can run'
+      timeout-minutes: 5
+      shell: 'powershell'
+      run: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}/ci-helper/verify/run-ani-test-windows-x64.ps1" "${{ github.workspace }}\ci-helper\verify" "mediamp-ffmpeg-smoke-test"'
+    - id: 'step-5'
+      name: 'Check that bundled SQLite can be loaded'
+      timeout-minutes: 5
+      shell: 'powershell'
+      run: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}/ci-helper/verify/run-ani-test-windows-x64.ps1" "${{ github.workspace }}\ci-helper\verify" "sqlite-bundled-load-test"'
   verify_self-hosted-macos-15:
     name: 'Verify (macOS 15 AArch64 (Self-Hosted))'
     runs-on:
@@ -1580,3 +1935,11 @@ jobs:
         chmod +x "$ANI_APPIMAGE"
         ANIMEKO_DESKTOP_TEST_TASK="sentry-dsn" "$ANI_APPIMAGE"
       if: '${{ (github.repository == ''open-ani/animeko'') && (!(github.event_name == ''pull_request'')) }}'
+    - id: 'step-6'
+      name: 'Check that bundled SQLite can be loaded'
+      timeout-minutes: 5
+      shell: 'bash'
+      run: |-
+        ANI_APPIMAGE="${{ github.workspace }}/ci-helper/verify/Animeko-x86_64.AppImage"
+        chmod +x "$ANI_APPIMAGE"
+        ANIMEKO_DESKTOP_TEST_TASK="sqlite-bundled-load-test" "$ANI_APPIMAGE"

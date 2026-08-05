@@ -99,10 +99,18 @@ import me.him188.ani.app.ui.settings.mediasource.selector.EditSelectorMediaSourc
 import me.him188.ani.app.ui.settings.tabs.media.torrent.peer.PeerFilterSettingsScreen
 import me.him188.ani.app.ui.settings.tabs.media.torrent.peer.PeerFilterSettingsViewModel
 import me.him188.ani.app.ui.subject.details.SubjectDetailsScreen
+import me.him188.ani.app.ui.subject.person.CharacterDetailsScreen
+import me.him188.ani.app.ui.subject.person.CharacterDetailsViewModel
+import me.him188.ani.app.ui.subject.person.PersonDetailsScreen
+import me.him188.ani.app.ui.subject.person.PersonDetailsViewModel
 import me.him188.ani.app.ui.subject.details.SubjectDetailsViewModel
 import me.him188.ani.app.ui.subject.episode.EpisodeScreen
 import me.him188.ani.app.ui.subject.episode.EpisodeViewModel
 import me.him188.ani.app.ui.user.SelfInfoStateProducer
+import me.him188.ani.app.ui.watchtogether.LocalWatchTogetherPlayerController
+import me.him188.ani.app.ui.watchtogether.WatchTogetherOverlayHost
+import me.him188.ani.app.ui.watchtogether.WatchTogetherPlayerController
+import me.him188.ani.app.ui.watchtogether.WatchTogetherViewModel
 import me.him188.ani.datasources.api.source.FactoryId
 import kotlin.reflect.typeOf
 
@@ -113,6 +121,10 @@ import kotlin.reflect.typeOf
 fun AniAppContent(aniNavigator: AniNavigator) {
     val aniAppViewModel = viewModel<AniAppViewModel>()
     val appState = aniAppViewModel.appState.collectAsStateWithLifecycle(null).value ?: return
+    val watchTogetherViewModel = viewModel { WatchTogetherViewModel() }
+    val watchTogetherPlayerController = remember(watchTogetherViewModel) {
+        WatchTogetherPlayerController(watchTogetherViewModel::onPlayerEntryClick)
+    }
 
     val navigator = rememberNavController()
     aniNavigator.setNavController(navigator)
@@ -121,6 +133,7 @@ fun AniAppContent(aniNavigator: AniNavigator) {
         CompositionLocalProvider(
             LocalNavigator provides aniNavigator,
             LocalBrowserNavigator providesDefault aniAppViewModel.browserNavigator,
+            LocalWatchTogetherPlayerController provides watchTogetherPlayerController,
         ) {
             ProvideAniMotionCompositionLocals {
                 AniAppContentImpl(
@@ -129,14 +142,18 @@ fun AniAppContent(aniNavigator: AniNavigator) {
                     appState.mainSceneInitialPage,
                     Modifier.fillMaxSize(),
                 )
+                BangumiSessionExpiredPromptHost(
+                    viewModel = aniAppViewModel,
+                    enabled = appState.initialNavRoute is NavRoutes.Main,
+                    onLogin = {
+                        aniNavigator.navigateBangumiAuthorize()
+                    },
+                )
+                WatchTogetherOverlayHost(
+                    viewModel = watchTogetherViewModel,
+                    aniNavigator = aniNavigator,
+                )
             }
-            BangumiSessionExpiredPromptHost(
-                viewModel = aniAppViewModel,
-                enabled = appState.initialNavRoute is NavRoutes.Main,
-                onLogin = {
-                    aniNavigator.navigateBangumiAuthorize()
-                },
-            )
         }
     }
 }
@@ -570,6 +587,44 @@ private fun AniAppContentImpl(
                     },
                     Modifier.fillMaxSize(),
                     windowInsets = windowInsets,
+                )
+            }
+            composable<NavRoutes.PersonDetail>(
+                enterTransition = enterTransition,
+                exitTransition = exitTransition,
+                popEnterTransition = popEnterTransition,
+                popExitTransition = popExitTransition,
+            ) { backStackEntry ->
+                val route = backStackEntry.toRoute<NavRoutes.PersonDetail>()
+                val vm = viewModel<PersonDetailsViewModel>(key = "person-${route.personId}") {
+                    PersonDetailsViewModel(route.personId)
+                }
+                PersonDetailsScreen(
+                    vm,
+                    Modifier.fillMaxSize(),
+                    windowInsets = windowInsets,
+                    navigationIcon = {
+                        BackNavigationIconButton({ aniNavigator.popBackStack(route, inclusive = true) })
+                    },
+                )
+            }
+            composable<NavRoutes.CharacterDetail>(
+                enterTransition = enterTransition,
+                exitTransition = exitTransition,
+                popEnterTransition = popEnterTransition,
+                popExitTransition = popExitTransition,
+            ) { backStackEntry ->
+                val route = backStackEntry.toRoute<NavRoutes.CharacterDetail>()
+                val vm = viewModel<CharacterDetailsViewModel>(key = "character-${route.characterId}") {
+                    CharacterDetailsViewModel(route.characterId)
+                }
+                CharacterDetailsScreen(
+                    vm,
+                    Modifier.fillMaxSize(),
+                    windowInsets = windowInsets,
+                    navigationIcon = {
+                        BackNavigationIconButton({ aniNavigator.popBackStack(route, inclusive = true) })
+                    },
                 )
             }
             composable<NavRoutes.SubjectCaches>(

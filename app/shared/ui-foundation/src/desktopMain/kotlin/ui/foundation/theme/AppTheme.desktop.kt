@@ -13,12 +13,14 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.takeOrElse
 import com.materialkolor.PaletteStyle
 import com.materialkolor.dynamicColorScheme
 import me.him188.ani.app.ui.foundation.LocalPlatform
 import me.him188.ani.app.ui.foundation.layout.LocalPlatformWindow
+import me.him188.ani.utils.platform.isLinux
 import me.him188.ani.utils.platform.isWindows
 
 @Composable
@@ -35,18 +37,21 @@ actual fun appColorScheme(
     } else {
         seedColor
     }
-    return dynamicColorScheme(
-        primary = actualSeedColor,
-        isDark = isDark,
-        isAmoled = useBlackBackground,
-        style = PaletteStyle.TonalSpot,
-        modifyColorScheme = { colorScheme ->
-            modifyColorSchemeForBlackBackground(colorScheme, isDark, useBlackBackground)
-        },
-    )
+    // 生成整套配色要为每个色调值做一次 HCT 求解. 按输入缓存, 避免调用方因无关原因重组时重算.
+    return remember(actualSeedColor, isDark, useBlackBackground) {
+        dynamicColorScheme(
+            primary = actualSeedColor,
+            isDark = isDark,
+            isAmoled = useBlackBackground,
+            style = PaletteStyle.TonalSpot,
+            modifyColorScheme = { colorScheme ->
+                modifyColorSchemeForBlackBackground(colorScheme, isDark, useBlackBackground)
+            },
+        )
+    }
 }
 
 @Composable
 actual fun isPlatformSupportDynamicTheme(): Boolean {
-    return LocalPlatform.current.isWindows()
+    return LocalPlatform.current.run { isWindows() || isLinux() }
 }

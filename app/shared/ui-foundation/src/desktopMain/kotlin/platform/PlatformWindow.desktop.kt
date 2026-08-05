@@ -9,6 +9,7 @@
 
 package me.him188.ani.app.platform
 
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import me.him188.ani.app.platform.window.BasicWindowProc
 import me.him188.ani.app.platform.window.LayoutHitTestOwner
+import me.him188.ani.app.platform.window.LinuxAccentColorMonitor
 import me.him188.ani.utils.platform.Platform
 import me.him188.ani.utils.platform.isWindows
 
@@ -32,7 +34,8 @@ actual open class PlatformWindow(
     val windowScope: WindowScope? = null,
     val windowState: WindowState,
     val platform: Platform,
-    val layoutHitTestOwner: LayoutHitTestOwner? = null
+    val layoutHitTestOwner: LayoutHitTestOwner? = null,
+    private val alwaysOnTopState: MutableState<Boolean> = mutableStateOf(false),
 ) {
     internal var savedWindowsWindowState: SavedWindowsWindowState? = null
 
@@ -40,8 +43,11 @@ actual open class PlatformWindow(
 
     // Common desktop accent color for window.
     val accentColor: Flow<Color>
-        get() = windowsWindowProc.flatMapLatest {
-            it?.accentColor ?: flowOf(Color.Unspecified)
+        get() = when (platform) {
+            is Platform.Linux -> LinuxAccentColorMonitor.accentColor
+            else -> windowsWindowProc.flatMapLatest {
+                it?.accentColor ?: flowOf(Color.Unspecified)
+            }
         }
 
     private var isWindowsUndecoratedFullscreen by mutableStateOf(false)
@@ -68,6 +74,12 @@ actual open class PlatformWindow(
 
     actual fun floating() {
         windowState.placement = WindowPlacement.Floating
+    }
+
+    actual val isAlwaysOnTop: Boolean get() = alwaysOnTopState.value
+
+    actual fun setAlwaysOnTop(alwaysOnTop: Boolean) {
+        alwaysOnTopState.value = alwaysOnTop
     }
 }
 
